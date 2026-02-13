@@ -1,0 +1,138 @@
+Original prompt: Build a web service game that tracks my hand from camera and controls flying blades (drone-like) with TypeScript and Phaser3; start with specification/planning.
+
+## 2026-02-13
+- Read and applied develop-web-game skill guidance for planning stage.
+- Created `docs/mvp-spec-v2.md` with updated scope:
+  - Dozens of blades (30 to 80), scatter/gather/dash swarm modes.
+  - Gesture-based effect triggers (Open Palm, Fist, Pinch).
+  - Local-only hand tracking design in browser.
+  - Performance/privacy/DoD/test hooks requirements.
+- Created `docs/tasks.md` with phased implementation plan and exit criteria.
+- Completed Phase 0 scaffold files for Vite + TypeScript + Phaser3:
+  - `index.html`, `vite.config.ts`, `tsconfig*`, `eslint.config.js`, `.prettierrc`
+  - Phaser scenes: `BootScene`, `MenuScene`, `GameScene`, `GameOverScene`
+  - Runtime hooks: `window.render_game_to_text`, `window.advanceTime`
+  - Fullscreen toggle: `f` key, `Esc` exits browser fullscreen behavior
+- Updated `package.json` scripts for dev/build/typecheck/lint/format.
+
+## Test/Run Notes
+- `pnpm install` failed in this environment due DNS/network restriction:
+  - `getaddrinfo EAI_AGAIN registry.npmjs.org`
+- Because dependencies could not be installed, `pnpm dev`, `pnpm typecheck`, and `pnpm lint` were not executed yet.
+
+## TODO
+- Run `pnpm install` in a network-enabled environment.
+- Execute `pnpm dev`, verify scene transitions and fullscreen flow.
+- Begin Phase 1 camera/tracking pipeline integration.
+- Hardened lint configuration:
+  - Split browser TS source rules (`src/**/*.ts`) from Node config files.
+  - Added explicit browser globals to avoid false positives.
+  - Disabled core `no-undef` for TypeScript files.
+  - Updated lint script to `eslint . --max-warnings=0`.
+- Updated `GameScene` visual baseline to match swarm fantasy:
+  - Added space backdrop with star field.
+  - Added 56 visible blade agents (triangles, additive glow).
+  - Added swarm orbit/bob/pulse motion around moving anchor.
+- Verified skills available locally: `develop-web-game`, `playwright`.
+- Installed project/browser automation dependencies:
+  - `pnpm install`
+  - `pnpm add -D playwright`
+  - `npx playwright install chromium`
+- Lint/typecheck verification passed after setup:
+  - `pnpm typecheck`
+  - `pnpm lint`
+- Attempted web-game Playwright run with `scripts/web_game_playwright_client.js` against local Vite server.
+- Blocker: Chromium launch fails due missing system lib `libnspr4.so`.
+- Attempted fix via `npx playwright install-deps chromium`, but environment requires sudo password and could not complete non-interactively.
+- Implemented webcam hand tracking pipeline with MediaPipe Tasks Vision:
+  - Added dependency `@mediapipe/tasks-vision`.
+  - Added `src/tracking/handTracker.ts` (camera init, model load, per-frame inference, status handling).
+- Integrated hand tracker into `GameScene`:
+  - Blade swarm anchor now follows tracked hand (index fingertip) when available.
+  - Added fallback autopilot motion when hand is not detected.
+  - Added visual hand debug overlay with green dotted landmark connections + points.
+  - HUD now shows `Hand <status>`.
+  - Added tracker lifecycle cleanup on scene shutdown/destroy.
+- Extended runtime text output with `trackingStatus`.
+- Updated ESLint ignore to exclude `scripts/` helper copies.
+- Validation passed: `pnpm lint`, `pnpm typecheck`.
+- User-reported issue handled: hand tracking showed `error` and camera preview visibility was undesired.
+- Updated hand tracker:
+  - Camera video element is now hidden off-screen (no visible camera preview).
+  - Added robust hand landmarker initialization fallback:
+    - Model URL fallback sequence
+    - Delegate fallback sequence (GPU -> CPU)
+  - Error aggregation improved for easier diagnosis.
+- Updated HUD to show truncated hand-tracking error detail when status is `error`.
+- Validation passed: `pnpm typecheck`, `pnpm lint`.
+- Addressed persistent `Hand error` by removing runtime CDN dependency for core assets.
+- Added local static MediaPipe assets:
+  - `public/mediapipe/wasm/*`
+  - `public/mediapipe/models/hand_landmarker.task`
+- Hand tracker now resolves WASM/model with local-first fallback chain.
+- Updated ESLint ignore to include `public/` because vendored MediaPipe JS is not project source.
+- Validation passed: `pnpm lint`, `pnpm typecheck`.
+- Implemented requested hand-driven swarm behaviors in `GameScene`:
+  - Finger-open amount now controls swarm spread (`spreadFactor`).
+  - Finger-close naturally regathers swarm.
+  - Fast hand movement injects burst energy (`burstEnergy`) causing temporary blade detachment/scatter.
+  - Burst energy decays over time so blades return to formation.
+- Added hand openness estimator from landmarks (wrist-to-fingertip distances normalized by palm scale).
+- Added hand speed sampling and thresholded acceleration response.
+- HUD now exposes spread and burst metrics for tuning.
+- Validation passed: `pnpm typecheck`, `pnpm lint`.
+- Updated control model to decouple swarm motion from hand lock-on behavior.
+- Hand input now applies force toward an expanded target area (wider effective tracking range).
+- When tracking is lost, swarm anchor no longer resets/recenters; it continues autonomous drift.
+- Added inertial anchor velocity + drag + boundary bounce for asynchronous continuous motion.
+- Spread no longer snaps back quickly on tracking loss; it relaxes slowly.
+- Increased swarm visual dynamics significantly:
+  - Expanded spread radius scale from narrow range to wide range.
+  - Raised blade base radius range for larger on-screen formation.
+- Added gesture-driven swarm behavior modes from landmarks:
+  - `open` -> force-wide scatter
+  - `fist` -> force-tight gather
+  - `pinch` -> burst injection + spin boost (dash-like impulse)
+  - `none` -> continuous ratio-based control
+- Added gesture state + pinch cooldown logic and HUD visibility.
+- Validation passed: `pnpm typecheck`, `pnpm lint`.
+- Improved first-recognition stability and responsiveness:
+  - Added hand detector warm-up pass before entering live loop.
+  - Slightly reduced inference frequency to lower frame hitch risk.
+  - Added defensive detectForVideo error handling.
+- Added intuitive motion-driven swarm controls:
+  - Twirl gesture (finger orientation rotating) -> blades gather and co-rotate.
+  - Throw gesture (fast left/right hand throw with open hand) -> swarm launches and scatters in that direction.
+  - Kept shape gestures (open/fist/pinch) and layered dynamic gestures on top.
+- Added soft control blend-in on tracking reacquire to reduce abrupt lock-on hitch.
+- Validation passed: `pnpm typecheck`, `pnpm lint`.
+- Improved continuity under unstable hand detection:
+  - Added tracking grace window (`trackingGraceSec`) so control does not drop immediately.
+  - Added virtual hand target + velocity prediction to carry motion during brief tracking loss.
+  - Cached last reliable landmarks and reused them during grace period for smoother gesture continuity.
+- Made blades more fluid/independent:
+  - Added per-blade position/velocity simulation.
+  - Blades now spring toward orbit targets with per-blade noise, damping, and inertia (less rigid ring).
+  - Rotation now follows local velocity vector for more natural motion.
+- Validation passed: `pnpm typecheck`, `pnpm lint`.
+- User reported reduced responsiveness and dynamics after continuity changes.
+- Re-tuned for responsiveness-first while keeping brief continuity:
+  - Reduced tracking grace window from 0.5s -> 0.22s.
+  - Faster control blend-in and stronger live tracking stiffness.
+  - Reduced virtual-target lag (higher gain, higher blend).
+  - Increased live tracking velocity retention.
+  - Increased blade spring/noise and reduced over-damping for more dynamic motion.
+- Increased hand inference cadence (28ms interval) to improve responsiveness.
+- Validation passed: `pnpm typecheck`, `pnpm lint`.
+- Follow-up tuning based on user feedback (freeze on first recognition + too-attached swarm):
+  - Hand tracker: switched delegate preference to CPU-first to reduce first-recognition hitch risk.
+  - Hand tracker: slightly relaxed inference cadence to 30ms for smoother main-thread behavior.
+  - Reduced direct hand-lock force on anchor (`stiffness` lowered).
+  - Increased blade autonomy: lower spring, higher freedom/noise, lower damping loss.
+  - Result target: less sticky-to-hand behavior while keeping responsive control.
+- Validation passed: `pnpm typecheck`, `pnpm lint`.
+- Removed game-loop UI flow per user request:
+  - No start screen and no game over flow (Boot now starts `GameScene` directly).
+  - Removed score/time/game-over logic from `GameScene`.
+  - HUD now focuses on control state only (hand/gesture/spread/burst).
+  - `render_game_to_text` payload no longer includes score/hp.
