@@ -136,3 +136,37 @@ Original prompt: Build a web service game that tracks my hand from camera and co
   - Removed score/time/game-over logic from `GameScene`.
   - HUD now focuses on control state only (hand/gesture/spread/burst).
   - `render_game_to_text` payload no longer includes score/hp.
+- Added new `V` gesture swarm behavior (`v-split`):
+  - Gesture detector for V-sign (index+middle extended, ring+pinky folded, finger gap threshold).
+  - On V gesture, swarm enters dual-branch split mode and maintains two direction vectors from wrist to index/middle tips.
+  - Added `splitEnergy` state with decay and HUD visibility.
+  - Blade targets now include split offsets (even/odd blade groups diverge into two streams).
+- Validation passed: `pnpm typecheck`, `pnpm lint`.
+- Added two-hand control support:
+  - Hand tracker now requests and processes up to 2 hands (`numHands: 2`).
+  - `HandTrackingState` extended with `hands` array (per-hand anchor + landmarks).
+  - Hands are sorted left-to-right for stable behavior.
+- Game scene now supports dual-hand control:
+  - Uses blended center anchor when two hands are tracked.
+  - Adds mild spread/burst boost from hand separation distance.
+  - Renders both hand overlays when two hands are visible.
+- Validation passed: `pnpm typecheck`, `pnpm lint`.
+- Implemented role-split dual-hand control mode:
+  - Left hand controls swarm movement anchor.
+  - Right hand controls gesture recognition (spread/modes/throw/twirl/v-split).
+  - Single-hand fallback keeps prior behavior (one hand does both).
+- Hand tracker upgraded to 2-hand output state with per-hand landmarks/anchors.
+- HUD now displays hand mode (`single`/`dual`) to confirm active control mapping.
+- Validation passed: `pnpm typecheck`, `pnpm lint`.
+- Addressed user report: low swarm cohesion and poor controllability.
+- Tracking/control updates:
+  - Added per-hand handedness label to tracker output.
+  - Dual-hand role mapping now uses handedness first (Left=move, Right=gesture) with fallback.
+  - Increased direct control response (target blend + stiffness), slightly reduced drag.
+- Swarm cohesion updates:
+  - Narrowed spread radius range.
+  - Reduced split offset magnitude and gesture burst strength.
+  - Reduced per-blade noise amplitude.
+  - Increased spring and reduced freedom to tighten group.
+  - Increased velocity damping for stronger regroup behavior.
+- Validation passed: `pnpm typecheck`, `pnpm lint`.

@@ -14,10 +14,17 @@ export type HandPoint = {
   z: number;
 };
 
+export type TrackedHand = {
+  handedness: 'Left' | 'Right' | 'Unknown';
+  anchorNormalized: { x: number; y: number };
+  landmarks: HandPoint[];
+};
+
 export type HandTrackingState = {
   status: TrackingStatus;
   anchorNormalized: { x: number; y: number } | null;
   landmarks: HandPoint[];
+  hands: TrackedHand[];
   errorMessage: string | null;
 };
 
@@ -45,6 +52,7 @@ export class HandTracker {
     status: 'idle',
     anchorNormalized: null,
     landmarks: [],
+    hands: [],
     errorMessage: null
   };
 
@@ -114,6 +122,7 @@ export class HandTracker {
       status: this.state.status,
       anchorNormalized: this.state.anchorNormalized,
       landmarks: this.state.landmarks,
+      hands: this.state.hands,
       errorMessage: this.state.errorMessage
     };
   }
@@ -151,6 +160,7 @@ export class HandTracker {
     }
     this.state.anchorNormalized = null;
     this.state.landmarks = [];
+    this.state.hands = [];
   }
 
   private readonly tick = (nowTs: number): void => {
@@ -177,25 +187,40 @@ export class HandTracker {
   };
 
   private consumeResult(result: HandLandmarkerResult): void {
-    const points = result.landmarks?.[0];
-    if (!points || points.length === 0) {
+    const hands = result.landmarks ?? [];
+    if (hands.length === 0) {
       this.state.status = 'no-hand';
       this.state.anchorNormalized = null;
       this.state.landmarks = [];
+      this.state.hands = [];
       return;
     }
 
-    const mirrored = points.map((p) => ({
-      x: 1 - p.x,
-      y: p.y,
-      z: p.z
-    }));
-
-    const indexTip = mirrored[8] ?? mirrored[0];
+    const handednessList = result.handedness ?? [];
+    const trackedHands: TrackedHand[] = hands
+      .slice(0, 2)
+      .map((points, index) => {
+        const mirrored = points.map((p) => ({
+          x: 1 - p.x,
+          y: p.y,
+          z: p.z
+        }));
+        const indexTip = mirrored[8] ?? mirrored[0];
+        const labelRaw = handednessList[index]?.[0]?.categoryName ?? 'Unknown';
+        const handedness: 'Left' | 'Right' | 'Unknown' =
+          labelRaw === 'Left' || labelRaw === 'Right' ? labelRaw : 'Unknown';
+        return {
+          handedness,
+          anchorNormalized: { x: indexTip.x, y: indexTip.y },
+          landmarks: mirrored
+        };
+      })
+      .sort((a, b) => a.anchorNormalized.x - b.anchorNormalized.x);
 
     this.state.status = 'tracking';
-    this.state.anchorNormalized = { x: indexTip.x, y: indexTip.y };
-    this.state.landmarks = mirrored;
+    this.state.hands = trackedHands;
+    this.state.anchorNormalized = trackedHands[0]?.anchorNormalized ?? null;
+    this.state.landmarks = trackedHands[0]?.landmarks ?? [];
   }
 
   private async createLandmarkerWithFallback(): Promise<HandLandmarker> {
@@ -218,7 +243,7 @@ export class HandTracker {
             return await HandLandmarker.createFromOptions(vision, {
               baseOptions: { modelAssetPath, delegate },
               runningMode: 'VIDEO',
-              numHands: 1,
+              numHands: 2,
               minHandDetectionConfidence: 0.5,
               minHandPresenceConfidence: 0.5,
               minTrackingConfidence: 0.5

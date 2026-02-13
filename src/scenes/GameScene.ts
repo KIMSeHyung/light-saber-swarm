@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { runtimeState } from '../game/types';
-import { HandTracker, type HandPoint } from '../tracking/handTracker';
+import { HandTracker, type HandPoint, type TrackedHand } from '../tracking/handTracker';
 
 const BLADE_COUNT = 56;
 
@@ -46,9 +46,18 @@ type SwarmGesture =
   | 'open'
   | 'fist'
   | 'pinch'
+  | 'v-split'
   | 'twirl'
   | 'throw-left'
   | 'throw-right';
+
+type HandControlInput = {
+  moveAnchor: { x: number; y: number } | null;
+  gestureLandmarks: HandPoint[];
+  overlayHands: HandPoint[][];
+  dualHand: boolean;
+  handSeparation: number;
+};
 
 export class GameScene extends Phaser.Scene {
   private hudText?: Phaser.GameObjects.Text;
@@ -70,14 +79,19 @@ export class GameScene extends Phaser.Scene {
   private throwDirectionX = 0;
   private twirlEnergy = 0;
   private twirlDirection = 1;
+  private splitEnergy = 0;
+  private splitDirA = new Phaser.Math.Vector2(0.7, -0.2).normalize();
+  private splitDirB = new Phaser.Math.Vector2(0.7, 0.2).normalize();
   private prevWristIndexAngle: number | null = null;
   private controlBlend = 0;
   private wasTracking = false;
   private trackingLostSec = 999;
   private readonly trackingGraceSec = 0.22;
-  private lastReliableLandmarks: HandPoint[] = [];
+  private lastReliableGestureLandmarks: HandPoint[] = [];
+  private lastReliableMoveAnchor: { x: number; y: number } | null = null;
   private virtualHandTarget = new Phaser.Math.Vector2(640, 360);
   private virtualHandVelocity = new Phaser.Math.Vector2(0, 0);
+  private handMode: 'single' | 'dual' = 'single';
 
   constructor() {
     super('game');
@@ -154,7 +168,7 @@ export class GameScene extends Phaser.Scene {
     const detail =
       state.status === 'error' && state.errorMessage ? ` | ${state.errorMessage.slice(0, 72)}` : '';
     this.hudText?.setText(
-      `Hand ${state.status} | Gesture ${this.gesture} | Spread ${this.spreadFactor.toFixed(2)} | Burst ${this.burstEnergy.toFixed(2)}${detail}`
+      `Hand ${state.status} (${this.handMode}) | Gesture ${this.gesture} | Spread ${this.spreadFactor.toFixed(2)} | Burst ${this.burstEnergy.toFixed(2)} | Split ${this.splitEnergy.toFixed(2)}${detail}`
     );
   }
 
@@ -209,11 +223,20 @@ export class GameScene extends Phaser.Scene {
     const rawTracking = this.handTracker.getState();
     const dtSec = Math.max(0.001, delta / 1000);
     this.driftTime += dtSec;
-    const hasLiveTracking = rawTracking.status === 'tracking' && !!rawTracking.anchorNormalized;
+    const hasLiveTracking = rawTracking.status === 'tracking' && rawTracking.hands.length > 0;
 
-    if (hasLiveTracking && rawTracking.landmarks.length > 0) {
-      this.lastReliableLandmarks = rawTracking.landmarks.map((p) => ({ ...p }));
+    const liveInput = this.resolveHandControlInput(rawTracking.hands);
+
+    if (hasLiveTracking && liveInput.moveAnchor) {
+      this.handMode = liveInput.dualHand ? 'dual' : 'single';
+      this.lastReliableGestureLandmarks = liveInput.gestureLandmarks.map((p) => ({ ...p }));
+      this.lastReliableMoveAnchor = { ...liveInput.moveAnchor };
       this.trackingLostSec = 0;
+      if (liveInput.dualHand) {
+        const twoHandSpreadBoost = Phaser.Math.Clamp(liveInput.handSeparation * 1.35, 0, 0.55);
+        this.spreadFactor = Phaser.Math.Clamp(this.spreadFactor + twoHandSpreadBoost * 0.02, 0, 1);
+        this.burstEnergy = Phaser.Math.Clamp(this.burstEnergy + twoHandSpreadBoost * 0.015, 0, 1.9);
+      }
     } else {
       this.trackingLostSec += dtSec;
     }
@@ -221,13 +244,22 @@ export class GameScene extends Phaser.Scene {
     const hasGraceTracking =
       !hasLiveTracking &&
       this.trackingLostSec < this.trackingGraceSec &&
-      this.lastReliableLandmarks.length > 0;
-    const controlLandmarks = hasLiveTracking ? rawTracking.landmarks : this.lastReliableLandmarks;
+      this.lastReliableGestureLandmarks.length > 0 &&
+      this.lastReliableMoveAnchor !== null;
+    const controlLandmarks = hasLiveTracking
+      ? liveInput.gestureLandmarks
+      : this.lastReliableGestureLandmarks;
+    const moveAnchor = hasLiveTracking ? liveInput.moveAnchor : this.lastReliableMoveAnchor;
+    const overlayHands = hasLiveTracking
+      ? liveInput.overlayHands
+      : controlLandmarks.length > 0
+        ? [controlLandmarks]
+        : [];
 
-    this.drawHandOverlay(controlLandmarks);
+    this.drawHandsOverlay(overlayHands);
     this.updateSpreadState(controlLandmarks, delta);
 
-    if (hasLiveTracking && rawTracking.anchorNormalized) {
+    if (hasLiveTracking && moveAnchor) {
       if (!this.wasTracking) {
         this.controlBlend = 0.45;
         this.lastAnchorSample = this.anchor.clone();
@@ -236,10 +268,7 @@ export class GameScene extends Phaser.Scene {
       this.wasTracking = true;
       this.controlBlend = Math.min(1, this.controlBlend + dtSec * 8.5);
 
-      const expanded = this.mapHandToExpandedTarget(
-        rawTracking.anchorNormalized.x,
-        rawTracking.anchorNormalized.y
-      );
+      const expanded = this.mapHandToExpandedTarget(moveAnchor.x, moveAnchor.y);
 
       const toMeasuredX = expanded.x - this.virtualHandTarget.x;
       const toMeasuredY = expanded.y - this.virtualHandTarget.y;
@@ -248,10 +277,10 @@ export class GameScene extends Phaser.Scene {
       this.virtualHandVelocity.scale(0.93);
       this.virtualHandTarget.x += this.virtualHandVelocity.x * dtSec;
       this.virtualHandTarget.y += this.virtualHandVelocity.y * dtSec;
-      this.virtualHandTarget.x = Phaser.Math.Linear(this.virtualHandTarget.x, expanded.x, 0.55);
-      this.virtualHandTarget.y = Phaser.Math.Linear(this.virtualHandTarget.y, expanded.y, 0.55);
+      this.virtualHandTarget.x = Phaser.Math.Linear(this.virtualHandTarget.x, expanded.x, 0.62);
+      this.virtualHandTarget.y = Phaser.Math.Linear(this.virtualHandTarget.y, expanded.y, 0.62);
 
-      const stiffness = 10.6 * this.controlBlend;
+      const stiffness = 12.8 * this.controlBlend;
       this.anchorVelocity.x += (this.virtualHandTarget.x - this.anchor.x) * stiffness * dtSec;
       this.anchorVelocity.y += (this.virtualHandTarget.y - this.anchor.y) * stiffness * dtSec;
       this.updateBurstFromAnchorSpeed(dtSec, controlLandmarks);
@@ -274,7 +303,7 @@ export class GameScene extends Phaser.Scene {
       this.prevWristIndexAngle = null;
     }
 
-    const drag = hasLiveTracking ? 0.945 : hasGraceTracking ? 0.93 : 0.968;
+    const drag = hasLiveTracking ? 0.94 : hasGraceTracking ? 0.92 : 0.968;
     this.anchorVelocity.scale(drag);
 
     this.anchor.x += this.anchorVelocity.x * dtSec;
@@ -292,37 +321,75 @@ export class GameScene extends Phaser.Scene {
     this.anchor.y = Phaser.Math.Clamp(this.anchor.y, -marginY, this.scale.height + marginY);
   }
 
-  private drawHandOverlay(landmarks: HandPoint[]): void {
+  private drawHandsOverlay(handsLandmarks: HandPoint[][]): void {
     if (!this.handOverlay) {
       return;
     }
 
     this.handOverlay.clear();
 
-    if (landmarks.length === 0) {
+    if (handsLandmarks.length === 0) {
       return;
     }
 
-    for (const [startIndex, endIndex] of HAND_CONNECTIONS) {
-      const a = landmarks[startIndex];
-      const b = landmarks[endIndex];
-      if (!a || !b) {
-        continue;
+    for (const landmarks of handsLandmarks) {
+      for (const [startIndex, endIndex] of HAND_CONNECTIONS) {
+        const a = landmarks[startIndex];
+        const b = landmarks[endIndex];
+        if (!a || !b) {
+          continue;
+        }
+
+        this.drawDottedSegment(
+          a.x * this.scale.width,
+          a.y * this.scale.height,
+          b.x * this.scale.width,
+          b.y * this.scale.height,
+          0x5dff9e
+        );
       }
 
-      this.drawDottedSegment(
-        a.x * this.scale.width,
-        a.y * this.scale.height,
-        b.x * this.scale.width,
-        b.y * this.scale.height,
-        0x5dff9e
-      );
+      for (const p of landmarks) {
+        this.handOverlay.fillStyle(0x63ffa4, 0.85);
+        this.handOverlay.fillCircle(p.x * this.scale.width, p.y * this.scale.height, 3);
+      }
+    }
+  }
+
+  private resolveHandControlInput(hands: TrackedHand[]): HandControlInput {
+    if (hands.length === 0) {
+      return {
+        moveAnchor: null,
+        gestureLandmarks: [],
+        overlayHands: [],
+        dualHand: false,
+        handSeparation: 0
+      };
     }
 
-    for (const p of landmarks) {
-      this.handOverlay.fillStyle(0x63ffa4, 0.85);
-      this.handOverlay.fillCircle(p.x * this.scale.width, p.y * this.scale.height, 3);
+    if (hands.length === 1) {
+      const single = hands[0];
+      return {
+        moveAnchor: single.anchorNormalized,
+        gestureLandmarks: single.landmarks,
+        overlayHands: [single.landmarks],
+        dualHand: false,
+        handSeparation: 0
+      };
     }
+
+    const leftByLabel = hands.find((h) => h.handedness === 'Left');
+    const rightByLabel = hands.find((h) => h.handedness === 'Right');
+    const left = leftByLabel ?? hands[0];
+    const right = rightByLabel ?? (hands[0] === left ? hands[1] : hands[0]);
+    const handSeparation = Math.abs(right.anchorNormalized.x - left.anchorNormalized.x);
+    return {
+      moveAnchor: left.anchorNormalized,
+      gestureLandmarks: right.landmarks,
+      overlayHands: [left.landmarks, right.landmarks],
+      dualHand: true,
+      handSeparation
+    };
   }
 
   private drawDottedSegment(
@@ -353,12 +420,14 @@ export class GameScene extends Phaser.Scene {
     const dt = delta;
     const dtSec = Math.max(0.001, delta / 1000);
     const pulse = 1 + Math.sin(runtimeState.elapsedMs * 0.003) * 0.18;
-    const spreadRadiusScale = Phaser.Math.Linear(0.12, 2.45, this.spreadFactor);
+    const spreadRadiusScale = Phaser.Math.Linear(0.24, 1.68, this.spreadFactor);
     this.burstEnergy = Math.max(0, this.burstEnergy - dtSec * 0.62);
     this.throwEnergy = Math.max(0, this.throwEnergy - dtSec * 0.95);
     this.twirlEnergy = Math.max(0, this.twirlEnergy - dtSec * 1.15);
+    this.splitEnergy = Math.max(0, this.splitEnergy - dtSec * 0.9);
 
-    for (const blade of this.blades) {
+    for (let i = 0; i < this.blades.length; i += 1) {
+      const blade = this.blades[i];
       const gestureSpinBoost = this.gesture === 'pinch' ? 0.8 : this.gesture === 'open' ? 0.25 : 0;
       blade.angle += blade.angularVelocity * dt * (1 + this.burstEnergy * 0.65 + gestureSpinBoost);
       blade.angle += this.twirlDirection * this.twirlEnergy * 0.0016 * dt;
@@ -370,15 +439,19 @@ export class GameScene extends Phaser.Scene {
       const throwOffsetX = this.throwDirectionX * this.throwEnergy * (70 + blade.baseRadius * 0.16);
       const targetX = this.anchor.x + Math.cos(blade.angle) * currentRadius + throwOffsetX;
       const targetY = this.anchor.y + Math.sin(blade.angle) * (currentRadius * 0.55);
+      const splitDir = i % 2 === 0 ? this.splitDirA : this.splitDirB;
+      const splitOffsetMagnitude = this.splitEnergy * (60 + blade.baseRadius * 0.2);
+      const splitOffsetX = splitDir.x * splitOffsetMagnitude;
+      const splitOffsetY = splitDir.y * splitOffsetMagnitude;
 
-      const noiseX = Math.sin(this.driftTime * 2.55 + blade.noisePhase) * 42;
-      const noiseY = Math.cos(this.driftTime * 2.2 + blade.noisePhase * 1.3) * 37;
-      const spring = 13 + this.spreadFactor * 8.5;
-      const freedom = 1.2 + this.spreadFactor * 0.75 + this.throwEnergy * 0.5;
-      blade.vx += ((targetX + noiseX - blade.x) * spring * dtSec) / freedom;
-      blade.vy += ((targetY + noiseY - blade.y) * spring * dtSec) / freedom;
-      blade.vx *= 0.955;
-      blade.vy *= 0.955;
+      const noiseX = Math.sin(this.driftTime * 2.15 + blade.noisePhase) * 21;
+      const noiseY = Math.cos(this.driftTime * 1.9 + blade.noisePhase * 1.3) * 17;
+      const spring = 24 + this.spreadFactor * 11;
+      const freedom = 0.92 + this.spreadFactor * 0.42 + this.throwEnergy * 0.22;
+      blade.vx += ((targetX + splitOffsetX + noiseX - blade.x) * spring * dtSec) / freedom;
+      blade.vy += ((targetY + splitOffsetY + noiseY - blade.y) * spring * dtSec) / freedom;
+      blade.vx *= 0.93;
+      blade.vy *= 0.93;
       blade.x += blade.vx * dtSec;
       blade.y += blade.vy * dtSec;
 
@@ -417,16 +490,20 @@ export class GameScene extends Phaser.Scene {
       this.gesture = gesture;
 
       if (gesture === 'open') {
-        targetSpread = 1;
+        targetSpread = 0.86;
       } else if (gesture === 'fist') {
-        targetSpread = 0.04;
+        targetSpread = 0.12;
         this.burstEnergy = Math.max(0, this.burstEnergy - dtSec * 1.35);
       } else if (gesture === 'pinch') {
         targetSpread = Math.max(0.28, openRatio * 0.6);
         if (this.pinchCooldownSec <= 0) {
-          this.burstEnergy = Phaser.Math.Clamp(this.burstEnergy + 0.9, 0, 1.9);
+          this.burstEnergy = Phaser.Math.Clamp(this.burstEnergy + 0.72, 0, 1.9);
           this.pinchCooldownSec = 0.22;
         }
+      } else if (gesture === 'v-split') {
+        targetSpread = Math.max(0.58, openRatio * 0.82);
+        this.updateSplitDirectionsFromLandmarks(landmarks);
+        this.splitEnergy = Phaser.Math.Clamp(this.splitEnergy + dtSec * 2.3 + 0.04, 0, 1.2);
       } else {
         targetSpread = openRatio;
       }
@@ -583,6 +660,9 @@ export class GameScene extends Phaser.Scene {
     if (pinchDistance < 0.5 && openRatio > 0.18) {
       return 'pinch';
     }
+    if (this.isVGesture(landmarks, palmScale, pinchDistance)) {
+      return 'v-split';
+    }
     if (openRatio > 0.72) {
       return 'open';
     }
@@ -590,5 +670,70 @@ export class GameScene extends Phaser.Scene {
       return 'fist';
     }
     return 'none';
+  }
+
+  private isVGesture(landmarks: HandPoint[], palmScale: number, pinchDistance: number): boolean {
+    const wrist = landmarks[0];
+    const indexTip = landmarks[8];
+    const middleTip = landmarks[12];
+    const ringTip = landmarks[16];
+    const pinkyTip = landmarks[20];
+    const indexPip = landmarks[6];
+    const middlePip = landmarks[10];
+    const ringPip = landmarks[14];
+    const pinkyPip = landmarks[18];
+
+    if (
+      !wrist ||
+      !indexTip ||
+      !middleTip ||
+      !ringTip ||
+      !pinkyTip ||
+      !indexPip ||
+      !middlePip ||
+      !ringPip ||
+      !pinkyPip
+    ) {
+      return false;
+    }
+
+    const indexExtended =
+      Phaser.Math.Distance.Between(wrist.x, wrist.y, indexTip.x, indexTip.y) >
+      Phaser.Math.Distance.Between(wrist.x, wrist.y, indexPip.x, indexPip.y) * 1.2;
+    const middleExtended =
+      Phaser.Math.Distance.Between(wrist.x, wrist.y, middleTip.x, middleTip.y) >
+      Phaser.Math.Distance.Between(wrist.x, wrist.y, middlePip.x, middlePip.y) * 1.2;
+    const ringFolded =
+      Phaser.Math.Distance.Between(wrist.x, wrist.y, ringTip.x, ringTip.y) <
+      Phaser.Math.Distance.Between(wrist.x, wrist.y, ringPip.x, ringPip.y) * 1.14;
+    const pinkyFolded =
+      Phaser.Math.Distance.Between(wrist.x, wrist.y, pinkyTip.x, pinkyTip.y) <
+      Phaser.Math.Distance.Between(wrist.x, wrist.y, pinkyPip.x, pinkyPip.y) * 1.14;
+
+    const fingerGap =
+      Phaser.Math.Distance.Between(indexTip.x, indexTip.y, middleTip.x, middleTip.y) / palmScale;
+
+    return indexExtended && middleExtended && ringFolded && pinkyFolded && fingerGap > 0.55 && pinchDistance > 0.72;
+  }
+
+  private updateSplitDirectionsFromLandmarks(landmarks: HandPoint[]): void {
+    const wrist = landmarks[0];
+    const indexTip = landmarks[8];
+    const middleTip = landmarks[12];
+    if (!wrist || !indexTip || !middleTip) {
+      return;
+    }
+
+    const dirA = new Phaser.Math.Vector2(indexTip.x - wrist.x, indexTip.y - wrist.y).normalize();
+    const dirB = new Phaser.Math.Vector2(middleTip.x - wrist.x, middleTip.y - wrist.y).normalize();
+
+    if (Number.isFinite(dirA.x) && Number.isFinite(dirA.y)) {
+      this.splitDirA.lerp(dirA, 0.4);
+      this.splitDirA.normalize();
+    }
+    if (Number.isFinite(dirB.x) && Number.isFinite(dirB.y)) {
+      this.splitDirB.lerp(dirB, 0.4);
+      this.splitDirB.normalize();
+    }
   }
 }
