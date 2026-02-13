@@ -57,6 +57,7 @@ type HandControlInput = {
   overlayHands: HandPoint[][];
   dualHand: boolean;
   handSeparation: number;
+  dualSpreadTarget: number;
 };
 
 export class GameScene extends Phaser.Scene {
@@ -92,6 +93,8 @@ export class GameScene extends Phaser.Scene {
   private virtualHandTarget = new Phaser.Math.Vector2(640, 360);
   private virtualHandVelocity = new Phaser.Math.Vector2(0, 0);
   private handMode: 'single' | 'dual' = 'single';
+  private dualHandActive = false;
+  private dualHandSpreadTarget = 0.5;
 
   constructor() {
     super('game');
@@ -229,15 +232,13 @@ export class GameScene extends Phaser.Scene {
 
     if (hasLiveTracking && liveInput.moveAnchor) {
       this.handMode = liveInput.dualHand ? 'dual' : 'single';
+      this.dualHandActive = liveInput.dualHand;
+      this.dualHandSpreadTarget = liveInput.dualSpreadTarget;
       this.lastReliableGestureLandmarks = liveInput.gestureLandmarks.map((p) => ({ ...p }));
       this.lastReliableMoveAnchor = { ...liveInput.moveAnchor };
       this.trackingLostSec = 0;
-      if (liveInput.dualHand) {
-        const twoHandSpreadBoost = Phaser.Math.Clamp(liveInput.handSeparation * 1.35, 0, 0.55);
-        this.spreadFactor = Phaser.Math.Clamp(this.spreadFactor + twoHandSpreadBoost * 0.02, 0, 1);
-        this.burstEnergy = Phaser.Math.Clamp(this.burstEnergy + twoHandSpreadBoost * 0.015, 0, 1.9);
-      }
     } else {
+      this.dualHandActive = false;
       this.trackingLostSec += dtSec;
     }
 
@@ -363,7 +364,8 @@ export class GameScene extends Phaser.Scene {
         gestureLandmarks: [],
         overlayHands: [],
         dualHand: false,
-        handSeparation: 0
+        handSeparation: 0,
+        dualSpreadTarget: this.dualHandSpreadTarget
       };
     }
 
@@ -374,7 +376,8 @@ export class GameScene extends Phaser.Scene {
         gestureLandmarks: single.landmarks,
         overlayHands: [single.landmarks],
         dualHand: false,
-        handSeparation: 0
+        handSeparation: 0,
+        dualSpreadTarget: this.dualHandSpreadTarget
       };
     }
 
@@ -383,12 +386,18 @@ export class GameScene extends Phaser.Scene {
     const left = leftByLabel ?? hands[0];
     const right = rightByLabel ?? (hands[0] === left ? hands[1] : hands[0]);
     const handSeparation = Math.abs(right.anchorNormalized.x - left.anchorNormalized.x);
+    const centerAnchor = {
+      x: (left.anchorNormalized.x + right.anchorNormalized.x) * 0.5,
+      y: (left.anchorNormalized.y + right.anchorNormalized.y) * 0.5
+    };
+    const dualSpreadTarget = Phaser.Math.Clamp(0.18 + handSeparation * 1.35, 0.18, 0.96);
     return {
-      moveAnchor: left.anchorNormalized,
+      moveAnchor: centerAnchor,
       gestureLandmarks: right.landmarks,
       overlayHands: [left.landmarks, right.landmarks],
       dualHand: true,
-      handSeparation
+      handSeparation,
+      dualSpreadTarget
     };
   }
 
@@ -420,7 +429,7 @@ export class GameScene extends Phaser.Scene {
     const dt = delta;
     const dtSec = Math.max(0.001, delta / 1000);
     const pulse = 1 + Math.sin(runtimeState.elapsedMs * 0.003) * 0.18;
-    const spreadRadiusScale = Phaser.Math.Linear(0.24, 1.68, this.spreadFactor);
+    const spreadRadiusScale = Phaser.Math.Linear(0.22, 1.48, this.spreadFactor);
     this.burstEnergy = Math.max(0, this.burstEnergy - dtSec * 0.62);
     this.throwEnergy = Math.max(0, this.throwEnergy - dtSec * 0.95);
     this.twirlEnergy = Math.max(0, this.twirlEnergy - dtSec * 1.15);
@@ -444,14 +453,15 @@ export class GameScene extends Phaser.Scene {
       const splitOffsetX = splitDir.x * splitOffsetMagnitude;
       const splitOffsetY = splitDir.y * splitOffsetMagnitude;
 
-      const noiseX = Math.sin(this.driftTime * 2.15 + blade.noisePhase) * 21;
-      const noiseY = Math.cos(this.driftTime * 1.9 + blade.noisePhase * 1.3) * 17;
-      const spring = 24 + this.spreadFactor * 11;
-      const freedom = 0.92 + this.spreadFactor * 0.42 + this.throwEnergy * 0.22;
+      const noiseScale = this.dualHandActive ? 0.55 : 1;
+      const noiseX = Math.sin(this.driftTime * 2.15 + blade.noisePhase) * 14 * noiseScale;
+      const noiseY = Math.cos(this.driftTime * 1.9 + blade.noisePhase * 1.3) * 12 * noiseScale;
+      const spring = 34 + this.spreadFactor * 15;
+      const freedom = 0.78 + this.spreadFactor * 0.24 + this.throwEnergy * 0.14;
       blade.vx += ((targetX + splitOffsetX + noiseX - blade.x) * spring * dtSec) / freedom;
       blade.vy += ((targetY + splitOffsetY + noiseY - blade.y) * spring * dtSec) / freedom;
-      blade.vx *= 0.93;
-      blade.vy *= 0.93;
+      blade.vx *= 0.9;
+      blade.vy *= 0.9;
       blade.x += blade.vx * dtSec;
       blade.y += blade.vy * dtSec;
 
@@ -482,7 +492,7 @@ export class GameScene extends Phaser.Scene {
     const dtSec = Math.max(0.001, delta / 1000);
     this.pinchCooldownSec = Math.max(0, this.pinchCooldownSec - dtSec);
     this.throwCooldownSec = Math.max(0, this.throwCooldownSec - dtSec);
-    let targetSpread = 0.52;
+    let targetSpread = this.dualHandActive ? this.dualHandSpreadTarget : 0.52;
 
     if (landmarks.length > 0) {
       const openRatio = Phaser.Math.Clamp(this.computeHandOpenRatio(landmarks), 0, 1);
@@ -506,6 +516,11 @@ export class GameScene extends Phaser.Scene {
         this.splitEnergy = Phaser.Math.Clamp(this.splitEnergy + dtSec * 2.3 + 0.04, 0, 1.2);
       } else {
         targetSpread = openRatio;
+      }
+
+      if (this.dualHandActive) {
+        // In dual-hand mode, hand distance is primary control and right-hand gesture is secondary.
+        targetSpread = Phaser.Math.Linear(this.dualHandSpreadTarget, targetSpread, 0.3);
       }
 
       if (this.twirlEnergy > 0.12) {

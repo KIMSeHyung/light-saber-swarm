@@ -170,3 +170,13 @@ Original prompt: Build a web service game that tracks my hand from camera and co
   - Increased spring and reduced freedom to tighten group.
   - Increased velocity damping for stronger regroup behavior.
 - Validation passed: `pnpm typecheck`, `pnpm lint`.
+- Tuned control for more intuitive dual-hand interaction and tighter cohesion.
+- Dual-hand mode changes:
+  - Movement now follows midpoint of both hands.
+  - Hand separation now directly controls primary spread target.
+  - Right-hand gestures remain as secondary modulation over distance-based spread.
+- Cohesion tightened:
+  - Reduced spread radius range.
+  - Reduced per-blade noise (extra reduction in dual-hand mode).
+  - Increased spring, reduced freedom, stronger damping for tighter flocking.
+- Validation passed: `pnpm typecheck`, `pnpm lint`.
